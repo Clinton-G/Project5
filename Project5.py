@@ -1,220 +1,208 @@
-from flask import Flask, jsonify, request
-from flask_sqlalchemy import SQLAlchemy
-from flask_marshmallow import Marshmallow
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import select, delete
-from datetime import date
-from typing import List
-from marshmallow import ValidationError, fields
-from sqlalchemy import select, delete
+import mysql.connector
+from mysql.connector import Error
+import re
 
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://clintongoin:password123@localhost/ecomm_db'
+db_name = 'Module 6: Project'
+user = 'root'
+password = 'password'   # Not My Real Password
+host = 'localhost'
 
-class Base(DeclarativeBase):
-    pass
+email_regex = r'^[\w\.-]+@[a-zA-Z\d\.-]+\.[a-zA-Z]{2,}$'
+phone_regex = r'^\+?1?\d{9,15}$'
 
-db = SQLAlchemy(app, model_class=Base)
-ma = Marshmallow(app)
+def validate_email(email):
+    return re.match(email_regex, email)
 
+def validate_phone_number(phone):
+    return re.match(phone_regex, phone)
 
-class Customer(Base):
-    __tablename__ = 'Customer' #Make your class name the same as your table name (trust me)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    customer_name: Mapped[str] = mapped_column(db.String(200), nullable=False)
-    email: Mapped[str] = mapped_column(db.String(300))
-    phone: Mapped[str] = mapped_column(db.String(16))
-    orders: Mapped[List["Orders"]] = db.relationship(back_populates='customer')
-
-order_products = db.Table(
-    "Order_Products",
-    Base.metadata,
-    db.Column('order_id', db.ForeignKey('Orders.id'), primary_key=True),
-    db.Column('product_id', db.ForeignKey('Products.id'), primary_key=True)
-)
-
-
-class Orders(Base):
-    __tablename__ = 'Orders'
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    order_date: Mapped[date] = mapped_column(db.Date, nullable=False)
-    customer_id: Mapped[int] = mapped_column(db.ForeignKey('Customer.id'))
-    customer: Mapped['Customer'] = db.relationship(back_populates='orders')
-    products: Mapped[List['Products']] = db.relationship(secondary=order_products)
-
-class Products(Base):
-    __tablename__ = "Products"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_name: Mapped[str] = mapped_column(db.String(255), nullable=False )
-    price: Mapped[float] = mapped_column(db.Float, nullable=False)
-
-
-with app.app_context():
-    db.create_all()
-
-#============================ CRUD OPERATIONS ==================================
-
-class CustomerSchema(ma.Schema):
-    id = fields.Integer(required=False)
-    customer_name = fields.String(required=True)
-    email = fields.String(required=True)
-    phone = fields.String(required=True)
-
-    class Meta:
-        fields = ('id', 'customer_name', 'email', 'phone')
-
-class ProductSchema(ma.Schema):
-    id = fields.Integer(required=False)
-    product_name = fields.String(required=True)
-    price = fields.Float(required=True)
-
-    class Meta:
-        fields = ('id', 'product_name', 'price')
-
-customer_schema = CustomerSchema()
-customers_schema = CustomerSchema(many= True)
-
-product_schema = ProductSchema()
-products_schema = ProductSchema(many=True)
-
-@app.route('/')
-def home():
-    return "If your are Lost welcome to the Sauce!"
-
-#====================Customer Interactions==========================
-
-@app.route("/customers", methods=['GET'])
-def get_customers():
+def create_customer(conn, name, email, phone):
     try:
-        query = select(Customer)
-        result = db.session.execute(query).scalars()
-        customers = result.all()
-        return customers_schema.jsonify(customers)
-    except Exception as e:
-        return jsonify({'Error': str(e)}), 500
+        cursor = conn.cursor()
+        sql = "INSERT INTO Customers (name, email, phone) VALUES (%s, %s, %s)"
+        cursor.execute(sql, (name, email, phone))
+        conn.commit()
+        return cursor.lastrowid
+    except Error as e:
+        print(f"Error Creating Csutomer: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-@app.route("/customers/<int:id>", methods=['GET'])
-def get_customer(id):
+def read_customer(conn, customer_id):
     try:
-        query = select(Customer).filter(Customer.id == id)
-        result = db.session.execute(query).scalars().first()
+        cursor = conn.cursor(dictionary=True)
+        sql = "SELECT * FROM Customers WHERE id = %s"
+        cursor.execute(sql, (customer_id,))
+        return cursor.fetchone()
+    except Error as e:
+        print(f"Error Reading Customer: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-        if result is None:
-            return jsonify({"Error": "Customer not found"}), 404
-    
-        return customer_schema.jsonify(result)
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
-
-@app.route("/customers", methods=["POST"])
-def add_customer():
+def update_customer(conn, customer_id, name, email, phone):
     try:
-        customer_data = customer_schema.load(request.json)
-        new_customer = Customer(customer_name=customer_data['customer_name'], email=customer_data['email'], phone=customer_data['phone'])
-        db.session.add(new_customer)
-        db.session.commit()
-        return jsonify({"Message": "New Customer added successfully"}), 201
-    except ValidationError as e:
-        return jsonify(e.messages), 400
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
+        cursor = conn.cursor()
+        sql = "UPDATE Customers SET name = %s, email = %s, phone = %s WHERE id = %s"
+        cursor.execute(sql, (name, email, phone, customer_id))
+        conn.commit()
+    except Error as e:
+        print(f"Error Updating Customer: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-@app.route("/customers/<int:id>", methods=['PUT'])
-def update_customer(id):
-    
-    query = select(Customer).where(Customer.id == id)
-    result = db.session.execute(query).scalars().first()
-    if result is None:
-        return jsonify({"Error": "Customer not found"}), 404
-    
-    customer = result
-    
+def delete_customer(conn, customer_id):
     try:
-        customer_data = customer_schema.load(request.json)
-    except ValidationError as e:
-        return jsonify(e.messages), 400
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
+        cursor = conn.cursor()
+        sql = "DELETE FROM Customers WHERE id = %s"
+        cursor.execute(sql, (customer_id,))
+        conn.commit()
+    except Error as e:
+        print(f"Error Deleting Customer: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-    for field, value in customer_data.items():
-            setattr(customer, field, value)
-
-    db.session.commit()
-    return jsonify({"Message": "Customer details have been updated!"})
-
-@app.route("/customers/<int:id>", methods=['DELETE'])
-def delete_customer(id):
+def create_customer_account(conn, customer_id, username, password):
     try:
-        query = delete(Customer).filter(Customer.id == id)
-        result = db.session.execute(query)
+        cursor = conn.cursor()
+        sql = "INSERT INTO CustomerAccounts (customer_id, username, password) VALUES (%s, %s, %s)"
+        cursor.execute(sql, (customer_id, username, password))
+        conn.commit()
+        return cursor.lastrowid
+    except Error as e:
+        print(f"Error Creating Customer Cccount: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-        if result.rowcount == 0:
-            return jsonify({'Error': 'Customer not found'}), 404
-    
-        db.session.commit()
-        return jsonify({"Message": "Customer removed Successfully!"}), 200
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
-
-#====================Products Interactions==========================
-
-@app.route('/products', methods=['POST'])
-def add_product():
+def read_customer_account(conn, customer_account_id):
     try:
-        product_data = product_schema.load(request.json)
-        new_product = Products(product_name=product_data['product_name'], price=product_data['price'])
-        db.session.add(new_product)
-        db.session.commit()
-        return jsonify({"Messages": "New Product added!"}), 201
-    except ValidationError as e:
-        return jsonify(e.messages), 400
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
+        cursor = conn.cursor(dictionary=True)
+        sql = "SELECT * FROM CustomerAccounts WHERE id = %s"
+        cursor.execute(sql, (customer_account_id,))
+        return cursor.fetchone()
+    except Error as e:
+        print(f"Error Reading Customer Account: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-#====================Order Operations================================
-
-class OrderSchema(ma.Schema):
-    id= fields.Integer(required=False)
-    order_date = fields.Date(required=False)
-    customer_id = fields.Integer(required=True)
-    
-    class Meta:
-        fields = ('id', 'order_date', 'customer_id', 'items')
-
-
-order_schema = OrderSchema()
-orders_schema = OrderSchema(many=True)
-
-@app.route('/orders', methods=['POST'])
-def add_order():
+def update_customer_account(conn, customer_account_id, username, password):
     try:
-        order_data = order_schema.load(request.json)
-        new_order = Orders(order_date=date.today(), customer_id = order_data['customer_id'])
+        cursor = conn.cursor()
+        sql = "UPDATE CustomerAccounts SET username = %s, password = %s WHERE id = %s"
+        cursor.execute(sql, (username, password, customer_account_id))
+        conn.commit()
+    except Error as e:
+        print(f"Error Updating Csutomer Account: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-        for item_id in order_data['items']:
-            query = select(Products).filter(Products.id == item_id)
-            item = db.session.execute(query).scalar()
-            new_order.products.append(item)
-        
-        db.session.add(new_order)
-        db.session.commit()
-        return jsonify({"Message": "New Order Placed!"}), 201
-    except ValidationError as e:
-        return jsonify(e.messages), 400
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
-
-@app.route("/order_items/<int:id>", methods=['GET'])
-def order_items(id):
+def delete_customer_account(conn, customer_account_id):
     try:
-        query = select(Orders).filter(Orders.id == id)
-        order = db.session.execute(query).scalar()
-        return products_schema.jsonify(order.products)
-    except Exception as e:
-        return jsonify({"Error": str(e)}), 500
+        cursor = conn.cursor()
+        sql = "DELETE FROM CustomerAccounts WHERE id = %s"
+        cursor.execute(sql, (customer_account_id,))
+        conn.commit()
+    except Error as e:
+        print(f"Error Deleting Customer Account: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
 
-if __name__ == '__main__':
-    app.run(debug=True)
+def create_product(conn, name, price):
+    try:
+        cursor = conn.cursor()
+        sql = "INSERT INTO Products (name, price) VALUES (%s, %s)"
+        cursor.execute(sql, (name, price))
+        conn.commit()
+        return cursor.lastrowid
+    except Error as e:
+        print(f"Error Creating Product: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+def read_product(conn, product_id):
+    try:
+        cursor = conn.cursor(dictionary=True)
+        sql = "SELECT * FROM Products WHERE id = %s"
+        cursor.execute(sql, (product_id,))
+        return cursor.fetchone()
+    except Error as e:
+        print(f"Error Rading Product: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+def update_product(conn, product_id, name, price):
+    try:
+        cursor = conn.cursor()
+        sql = "UPDATE Products SET name = %s, price = %s WHERE id = %s"
+        cursor.execute(sql, (name, price, product_id))
+        conn.commit()
+    except Error as e:
+        print(f"Error Updating Product: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+def delete_product(conn, product_id):
+    try:
+        cursor = conn.cursor()
+        sql = "DELETE FROM Products WHERE id = %s"
+        cursor.execute(sql, (product_id,))
+        conn.commit()
+    except Error as e:
+        print(f"Error Deleting Product: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+def list_products(conn):
+    try:
+        cursor = conn.cursor(dictionary=True)
+        sql = "SELECT * FROM Products"
+        cursor.execute(sql)
+        return cursor.fetchall()
+    except Error as e:
+        print(f"Error listing Products: {e}")
+    finally:
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+
+
+
+try:
+    conn = mysql.connector.connect(
+        database = db_name,
+        user = user,
+        password = password,
+        host = host
+    )
+
+    if conn.is_connected():
+        print('Connected to MySQL Database')
+
+    new_customer_id = create_customer(conn, "John Doe", "john@doe.com", "1234567890")
+    if new_customer_id:
+        print(f"Created Customer with ID: {new_customer_id}")
+
+    customer_details = read_customer(conn, 1234567890)
+    if customer_details:
+        print("Customer Details:")
+        print(customer_details)
+
+    update_customer(conn, 1234567890, "John Smith", "john@smith.com", "1234567890")
+
+    delete_customer(conn, 1234567890)
+
+finally:
+    if conn and conn.is_connected():
+        conn.close()
+        print('MySQL Connection is Now Closed')
